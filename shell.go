@@ -7,12 +7,15 @@
 package ashell
 
 import (
-	"bufio"
+	// "bufio"
 	"errors"
 	"fmt"
+	"log"
+
 	// "log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/pkg/term"
@@ -20,7 +23,8 @@ import (
 
 const (
 	KeyDefault byte = iota
-	KeyCtrlL        = 27
+	KeyEnter        = 13
+	KeyCtrlD        = 4
 )
 
 const (
@@ -29,20 +33,72 @@ const (
 )
 
 func Run() {
-	reader := bufio.NewReader(os.Stdin)
+
+	terminal, err := openInputTTY()
+	if err != nil {
+		log.Fatal(1)
+	}
+
+	if err = term.RawMode(terminal); err != nil {
+		log.Printf("cannot change the TTY mode (reason: %v)", err)
+		os.Exit(1)
+	}
+
+	defer func() {
+		terminal.Close()
+		terminal.Restore()
+	}()
+
+	var input []byte
 
 	for {
 		fmt.Fprint(os.Stdout, prompt())
 
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		if err = term.RawMode(terminal); err != nil {
+			log.Fatal(err)
 		}
 
-		if err = runCommand(input); err != nil {
+		maxByteNumber := 3
+		buf := make([]byte, maxByteNumber)
+
+		nOfByteRead, err := terminal.Read(buf)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
+			continue
+		}
+
+		// Arrow keys are prefixed with the ANSI escape code which take up the first two bytes.
+		// The third byte is the key specific value we are looking for.
+		// For example the left arrow key is '<esc>[A' while the right is '<esc>[C'
+		// See: https://en.wikipedia.org/wiki/ANSI_escape_code
+		keyIdx := 0
+		if nOfByteRead == 3 {
+			keyIdx = 2
+		}
+
+		switch key := buf[keyIdx]; key {
+		case KeyCtrlD:
+			input = []byte(Exit)
+			if err = runCommand(string(input)); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		case KeyEnter:
+			if err = runCommand(string(input)); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		default:
+			input = append(input, key)
+			fmt.Println(strconv.Itoa(int(key)))
 		}
 	}
+}
+
+func openInputTTY() (*term.Term, error) {
+	terminal, err := term.Open("/dev/tty")
+	if err != nil {
+		return nil, fmt.Errorf("cannot open the TTY (reason: %w)", err)
+	}
+	return terminal, nil
 }
 
 func prompt() string {
@@ -84,59 +140,4 @@ func runCommand(input string) error {
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	return cmd.Run()
-}
-
-func runHotKey(input byte) error {
-	var err error
-
-	hotKey, err := getHotKey()
-	if err != nil {
-		return err
-	}
-	var prog string
-	switch hotKey {
-	case KeyCtrlL:
-		prog = "clear"
-	default:
-		//
-	}
-	cmd := exec.Command(prog)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-	return cmd.Run()
-}
-
-func getHotKey() (byte, error) {
-	var err error
-
-	terminal, err := term.Open("/dev/tty")
-	if err != nil {
-		return KeyDefault, fmt.Errorf("cannot open the TTY (reason: %w)", err)
-	}
-	defer func() {
-		terminal.Close()
-		terminal.Restore()
-	}()
-
-	if err = term.RawMode(terminal); err != nil {
-		return 0, fmt.Errorf("cannot change the TTY mode (reason: %w)", err)
-	}
-
-	maxByteNumber := 3
-	buf := make([]byte, maxByteNumber)
-	nOfByteRead, err := terminal.Read(buf)
-
-	if err = term.RawMode(terminal); err != nil {
-		return KeyDefault, fmt.Errorf("cannot read from TTY mode (reason: %w)", err)
-	}
-
-	// Arrow keys are prefixed with the ANSI escape code which take up the first two bytes.
-	// The third byte is the key specific value we are looking for.
-	// For example the left arrow key is '<esc>[A' while the right is '<esc>[C'
-	// See: https://en.wikipedia.org/wiki/ANSI_escape_code
-	keyIdx := 0
-	if nOfByteRead == maxByteNumber {
-		keyIdx = 2
-	}
-	return buf[keyIdx], nil
 }
